@@ -17,3 +17,15 @@ anyhow = "1"
 
 [dev-dependencies]
 gpui-kit = { version = "0.9.1", features = ["test-support", "tree-sitter-markdown"] }
+
+[package.metadata.packager]
+product-name = "Markdown Converter"
+identifier = "app.markdown-converter"
+before-packaging-command = "cargo build --release"
+out-dir = "dist"
+formats = ["app", "dmg", "nsis", "deb", "appimage"]
+resources = [
+  { src = "vendor/pandoc/current/pandoc*", target = "." },
+  { src = "vendor/pandoc/current/COPYING.md", target = "pandoc-COPYING.md" },
+  "THIRD_PARTY_NOTICES.md",
+]

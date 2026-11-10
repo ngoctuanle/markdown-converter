@@ -2,7 +2,7 @@
 
 Plan: [2026-11-10-markdown-converter.md](2026-11-10-markdown-converter.md) · Spec: [design](../specs/2026-11-10-markdown-converter-design.md)
 
-**Progress: 11 of 12 tasks done** · Last updated 2026-11-10
+**Progress: 12 of 12 tasks done** · Last updated 2026-11-10
 
 | # | Task | Status | Commit | Check |
 |---|------|--------|--------|-------|
@@ -16,9 +16,9 @@ Plan: [2026-11-10-markdown-converter.md](2026-11-10-markdown-converter.md) · Sp
 | 8 | Parallel worker pool (`src/queue.rs`) | ✅ Done | `187918b`, `047b3de` | 4/4 tests (3 + panic recovery); full suite 32 + 11 pass, no warnings |
 | 9 | File-list model and settings | ✅ Done | `80035cf` | 8/8 tests (6 file list + 2 settings); full suite pass, no warnings |
 | 10 | Main window: top bar, file list, drag-and-drop, conversion | ✅ Done | `2800985` | Build clean (no warnings, clippy clean in `src/ui`); launches and stays up 8 s with no stderr, also with pandoc missing; full suite 43 + 11 pass. Still needs a hand check: drag-drop highlight, file dialog, converting the fixtures, settings remembered |
-| 11 | Preview pane | ✅ Done | (this commit) | 2/2 plan tests + 2 helper tests (percent-decoding, relative links) + 1 extra row-wording test; full suite 48 + 11 pass, build has no warnings; launches and stays up 8 s with no stderr. Checked outside the GUI: `with-pictures.docx` converted as `report.docx` and as `Báo cáo Q3 (final).docx`; the placeholder pass leaves the PNG links unchanged and every link (including the `<…>`-wrapped ones) resolves to an existing file. Still needs a hand check: Markdown mode with line numbers, Preview with the pictures, Show in folder, failed-file error text |
-| 12 | Packaging with the bundled pandoc | ⬜ Next | | Build a macOS `.app` and convert a file with it |
-| — | Whole-project review and fixes | ⬜ To do | | After Task 12 |
+| 11 | Preview pane | ✅ Done | `e3173e9`, `7b406c9` | 2/2 plan tests + 2 helper tests (percent-decoding, relative links) + 1 extra row-wording test; full suite 49 + 11 pass, build has no warnings; launches and stays up 8 s with no stderr. Checked outside the GUI: `with-pictures.docx` converted as `report.docx` and as `Báo cáo Q3 (final).docx`; the placeholder pass leaves the PNG links unchanged and every link (including the `<…>`-wrapped ones) resolves to an existing file. Still needs a hand check: Markdown mode with line numbers, Preview with the pictures, Show in folder, failed-file error text |
+| 12 | Packaging with the bundled pandoc | ✅ Done | (this commit) | `scripts/package.sh aarch64-apple-darwin` builds `.app` and `.dmg`; Resources hold `pandoc` (3.13), `pandoc-COPYING.md`, `THIRD_PARTY_NOTICES.md`. A release probe run from inside the bundle with `PATH=/usr/bin:/bin` located `Contents/MacOS/../Resources/pandoc` and converted Markdown to HTML. The real app launched from the bundle for 8 s with no stderr. Full suite passes. Still needs a hand check: open the `.app`, convert `tests/fixtures/two-sheets.xlsx`, confirm Done and no "pandoc not found" notification. The universal, Windows and Linux paths were not run |
+| — | Whole-project review and fixes | ⬜ Next | | After Task 12 |
 
 Status key: ✅ Done · 🔄 In progress · ⬜ To do · ❌ Blocked
 
@@ -27,7 +27,7 @@ Status key: ✅ Done · 🔄 In progress · ⬜ To do · ❌ Blocked
 - **Core logic** (Tasks 2–4): no UI, no pandoc. ✅ Done.
 - **Conversion working end to end** (Tasks 5–7): real files convert to Markdown with pictures. ✅ Done.
 - **Usable app** (Tasks 8–11): drag files in, convert in parallel, preview the result. ✅ Done (pending hand check).
-- **Shippable** (Task 12): a packaged macOS app with pandoc inside.
+- **Shippable** (Task 12): a packaged macOS app with pandoc inside. ✅ Done (macOS arm64 verified; Windows, Linux and universal not verified here).
 
 ## Decisions made during the work
 
@@ -39,6 +39,7 @@ Status key: ✅ Done · 🔄 In progress · ⬜ To do · ❌ Blocked
 - **Task 8:** If a conversion crashes inside the app (a bug, not a pandoc error), its row is marked Failed with "Internal error while converting" and the worker keeps going.
 - **Task 10:** The window has a minimum size of 800×500 so both the file list and the preview stay usable. API notes: the "Add files" dialog result is handled with `cx.spawn_in` rather than `cx.spawn`, because adding files can show a notification, which needs the window. The "pandoc not found" notification is pushed with `window.defer`, because the window's notification layer doesn't exist yet while the view is being built. Dialog errors and settings-save errors show as error notifications.
 - **Task 11:** The plan's `set_readonly(true, cx)` on the editor state doesn't work in gpui-component 0.9.1: the editor element copies its own read-only flag (default off) into the state every time it draws. The Markdown view is made read-only with `Editor::readonly(true)` on the element instead, which still allows selecting and copying. The Done-row summary now says "1 image" and "1 warning" for one, and "{n} images" and "{k} warnings" otherwise. The preview doesn't read the file again when the same converted file is shown again (the window re-sends the selection on every conversion update).
+- **Task 12:** `before-packaging-command = "cargo build --release"` builds for the host only, but packager looks in `target/<triple>/release`, so `scripts/package.sh` also runs `cargo build --release --target <triple>` first. `locate()` needed no change: packager puts resources in `Contents/Resources`. The universal path (not run) packages the `.app` from the arm64 build, `lipo`s the two binaries into it, ad-hoc signs, and makes the `.dmg` with `hdiutil`.
 
 ## Review Focus (from the plan): where each is covered
 
