@@ -1,0 +1,4 @@
+/target
+/vendor/pandoc
+/dist
+/.superpowers
