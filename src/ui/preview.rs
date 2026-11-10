@@ -1,15 +1,19 @@
 //! Right-hand pane showing the selected file's Markdown, raw or formatted.
 
+use crate::convert::ConvertOutcome;
 use crate::file_list::{FileItem, FileStatus};
-use crate::preview_text::{is_relative_path, percent_decode, placeholder_unrenderable_images};
+use crate::preview_text::{
+    PREVIEW_LIMIT, PreviewText, is_relative_path, load_preview, percent_decode,
+};
 use gpui_kit::component::button::Button;
 use gpui_kit::component::input::{Editor, EditorState, Textarea, TextareaState};
 use gpui_kit::component::tab::TabBar;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
     AnyElement, AppContext, Context, Entity, ImageSource, IntoElement, ParentElement, Render,
-    SharedString, SharedUri, Styled, Window, div, relative,
+    SharedString, SharedUri, Styled, Task, Window, div, relative,
 };
 use std::path::PathBuf;
 
@@ -25,6 +29,10 @@ struct Loaded {
     md_path: PathBuf,
     /// The file's text with undrawable pictures swapped for placeholders.
     preview_md: SharedString,
+    /// The conversion's warnings, e.g. pictures that weren't found.
+    warnings: Vec<String>,
+    /// Only the first `PREVIEW_LIMIT` bytes are shown.
+    truncated: bool,
 }
 
 /// What the pane shows instead of a file.
@@ -44,6 +52,10 @@ pub struct PreviewPane {
     failure_text: Entity<TextareaState>,
     current: Option<Loaded>,
     notice: Option<Notice>,
+    /// The file being read in the background, if any.
+    loading: Option<PathBuf>,
+    /// Dropping it abandons the read.
+    _load_task: Option<Task<()>>,
 }
 
 impl PreviewPane {
@@ -59,14 +71,20 @@ impl PreviewPane {
             failure_text: cx.new(|cx| TextareaState::new(window, cx)),
             current: None,
             notice: Some(Notice::Hint("Select a file to preview".into())),
+            loading: None,
+            _load_task: None,
         }
     }
 
     /// Shows `item`, or the placeholder when it is `None`.
     ///
     /// Called again whenever any conversion reports progress, so a file already on
-    /// show is not read a second time.
+    /// show (or being read) is not read a second time.
     pub fn show(&mut self, item: Option<&FileItem>, window: &mut Window, cx: &mut Context<Self>) {
+        if !matches!(item.map(|item| &item.status), Some(FileStatus::Done(_))) {
+            self.loading = None;
+            self._load_task = None;
+        }
         let notice = match item.map(|item| &item.status) {
             None => Some(Notice::Hint("Select a file to preview".into())),
             Some(FileStatus::Waiting | FileStatus::Queued | FileStatus::Converting) => {
@@ -77,26 +95,13 @@ impl PreviewPane {
             }
             Some(FileStatus::Done(outcome)) => {
                 let path = &outcome.md_path;
-                if self.notice.is_none()
-                    && self.current.as_ref().is_some_and(|c| &c.md_path == path)
-                {
+                let on_show = self.notice.is_none()
+                    && self.current.as_ref().is_some_and(|c| &c.md_path == path);
+                if on_show || self.loading.as_ref() == Some(path) {
                     return;
                 }
-                match std::fs::read_to_string(path) {
-                    Ok(text) => {
-                        self.current = Some(Loaded {
-                            md_path: path.clone(),
-                            preview_md: placeholder_unrenderable_images(&text).into(),
-                        });
-                        self.editor
-                            .update(cx, |editor, cx| editor.set_value(text, window, cx));
-                        None
-                    }
-                    Err(e) => Some(Notice::Hint(format!(
-                        "Could not read {}: {e}",
-                        path.display()
-                    ))),
-                }
+                self.start_loading(outcome.clone(), window, cx);
+                Some(Notice::Hint("Loading…".into()))
             }
         };
         if let Some(notice) = &notice {
@@ -111,6 +116,59 @@ impl PreviewPane {
             }
         }
         self.notice = notice;
+        cx.notify();
+    }
+
+    /// Reads the file off the UI thread, then shows it unless the selection
+    /// changed in the meantime.
+    fn start_loading(
+        &mut self,
+        outcome: ConvertOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let path = outcome.md_path.clone();
+        self.loading = Some(path.clone());
+        let read = cx.background_spawn(async move { load_preview(&path, PREVIEW_LIMIT) });
+        self._load_task = Some(cx.spawn_in(window, async move |this, cx| {
+            let result = read.await;
+            this.update_in(cx, |this, window, cx| {
+                this.finish_loading(outcome, result, window, cx)
+            })
+            .ok();
+        }));
+    }
+
+    fn finish_loading(
+        &mut self,
+        outcome: ConvertOutcome,
+        result: std::io::Result<PreviewText>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.loading.as_ref() != Some(&outcome.md_path) {
+            return; // A stale read: another file was selected since.
+        }
+        self.loading = None;
+        match result {
+            Ok(text) => {
+                self.current = Some(Loaded {
+                    md_path: outcome.md_path,
+                    preview_md: text.formatted.into(),
+                    warnings: outcome.warnings,
+                    truncated: text.truncated,
+                });
+                self.editor
+                    .update(cx, |editor, cx| editor.set_value(text.raw, window, cx));
+                self.notice = None;
+            }
+            Err(e) => {
+                self.notice = Some(Notice::Hint(format!(
+                    "Could not read {}: {e}",
+                    outcome.md_path.display()
+                )));
+            }
+        }
         cx.notify();
     }
 
@@ -183,7 +241,7 @@ impl PreviewPane {
         let Some(current) = &self.current else {
             return div().into_any_element();
         };
-        match self.mode {
+        let content = match self.mode {
             PreviewMode::Markdown => Editor::new(&self.editor)
                 .readonly(true)
                 .h(relative(1.))
@@ -208,8 +266,41 @@ impl PreviewPane {
                     .size_full()
                     .into_any_element()
             }
-        }
+        };
+        let muted = cx.theme().muted_foreground;
+        let has_notes = current.truncated || !current.warnings.is_empty();
+        v_flex()
+            .size_full()
+            .when(has_notes, |pane| {
+                pane.child(
+                    v_flex()
+                        .px_4()
+                        .py_2()
+                        .gap_1()
+                        .border_b_1()
+                        .border_color(cx.theme().border)
+                        .text_sm()
+                        .text_color(muted)
+                        .children(
+                            current
+                                .warnings
+                                .iter()
+                                .map(|warning| div().child(format!("Warning: {warning}"))),
+                        )
+                        .when(current.truncated, |notes| notes.child(truncation_note())),
+                )
+            })
+            .child(div().flex_1().min_h_0().child(content))
+            .into_any_element()
     }
+}
+
+/// Shown above a file that is longer than the preview loads.
+fn truncation_note() -> String {
+    format!(
+        "Showing the first {} MB — use Show in folder for the full file",
+        PREVIEW_LIMIT / (1024 * 1024)
+    )
 }
 
 /// The error text to show for a failed file; never blank.
@@ -236,8 +327,19 @@ mod tests {
 
     #[test]
     fn failure_text_falls_back_when_blank() {
-        assert_eq!(failure_text("pandoc: bad zip\nline 2"), "pandoc: bad zip\nline 2");
+        assert_eq!(
+            failure_text("pandoc: bad zip\nline 2"),
+            "pandoc: bad zip\nline 2"
+        );
         assert_eq!(failure_text(""), "Conversion failed");
         assert_eq!(failure_text("  \n"), "Conversion failed");
+    }
+
+    #[test]
+    fn truncation_note_names_the_limit() {
+        assert_eq!(
+            truncation_note(),
+            "Showing the first 2 MB — use Show in folder for the full file"
+        );
     }
 }
