@@ -1,3 +1,4 @@
+pub mod convert;
 pub mod formats;
 pub mod media;
 pub mod naming;
