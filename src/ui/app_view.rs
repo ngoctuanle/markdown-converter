@@ -15,17 +15,24 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AppContext, Context, Entity, ExternalPaths, InteractiveElement, IntoElement, ParentElement,
-    PathPromptOptions, Render, SharedString, Styled, Subscription, Task, Window, div, px,
+    App, AppContext, Context, Entity, ExternalPaths, InteractiveElement, IntoElement,
+    ParentElement, PathPromptOptions, Render, SharedString, Styled, Subscription, Task, Window,
+    div, px,
 };
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::time::Duration;
 
 /// How many skipped file names the warning lists before "…".
 const MAX_SKIPPED_NAMES: usize = 5;
 
+/// How long quitting waits for cancelled conversions to delete their partial output.
+const QUIT_WAIT: Duration = Duration::from_secs(2);
+
 pub struct AppView {
     files: FileList,
-    converter: Option<Converter>,
+    /// Shared with the quit handler, which shuts it down.
+    converter: Option<Rc<Converter>>,
     settings: Settings,
     settings_path: Option<PathBuf>,
     selected: Option<JobId>,
@@ -43,6 +50,17 @@ impl AppView {
         let (converter, event_task) = match Pandoc::locate() {
             Ok(pandoc) => {
                 let (converter, rx) = Converter::start(pandoc);
+                let converter = Rc::new(converter);
+                // App-level, not tied to this view: the window (and this view) may be
+                // gone by the time the app quits.
+                let on_quit = converter.clone();
+                App::on_app_quit(cx, move |_| {
+                    // Queued jobs are dropped, pandoc is killed, and the jobs in progress
+                    // delete their partial output before the process exits.
+                    on_quit.shutdown(QUIT_WAIT);
+                    async {}
+                })
+                .detach();
                 let task = cx.spawn_in(window, async move |this, cx| {
                     while let Ok(ev) = rx.recv().await {
                         let applied = this.update_in(cx, |this, window, cx| {

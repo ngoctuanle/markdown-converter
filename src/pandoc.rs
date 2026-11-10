@@ -4,9 +4,11 @@ use std::ffi::OsString;
 use std::fmt;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wait_timeout::ChildExt;
 
 /// The pandoc release the app is built and tested against.
@@ -14,6 +16,9 @@ pub const PINNED_VERSION: &str = "3.13";
 
 /// How long one pandoc run may take before it is killed.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// How often a running pandoc checks whether it should be killed.
+const POLL: Duration = Duration::from_millis(50);
 
 /// Longest `short_reason`, in bytes.
 const MAX_REASON_LEN: usize = 120;
@@ -24,10 +29,14 @@ const BIN: &str = "pandoc.exe";
 const BIN: &str = "pandoc";
 
 /// A pandoc executable plus the timeout applied to each run.
+///
+/// Clones share one stop switch: [`Pandoc::kill_all_running`] on any of them
+/// kills every pandoc they are running and refuses new runs.
 #[derive(Clone, Debug)]
 pub struct Pandoc {
     path: PathBuf,
     timeout: Duration,
+    stopped: Arc<AtomicBool>,
 }
 
 #[derive(Debug)]
@@ -35,7 +44,12 @@ pub enum PandocError {
     NotFound,
     Spawn(std::io::Error),
     Timeout(Duration),
-    Failed { code: Option<i32>, stderr: String },
+    /// Killed by [`Pandoc::kill_all_running`], e.g. because the app is quitting.
+    Cancelled,
+    Failed {
+        code: Option<i32>,
+        stderr: String,
+    },
 }
 
 impl Pandoc {
@@ -86,6 +100,7 @@ impl Pandoc {
         Pandoc {
             path,
             timeout: DEFAULT_TIMEOUT,
+            stopped: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -97,9 +112,24 @@ impl Pandoc {
         &self.path
     }
 
+    /// Kills every pandoc this instance (or a clone) is running, within about
+    /// 50 ms, and makes all later runs fail with [`PandocError::Cancelled`].
+    /// Used when the app quits, so no pandoc outlives it.
+    pub fn kill_all_running(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst)
+    }
+
     /// Runs pandoc with `args`, feeding `stdin` if given, and returns stdout.
-    /// The process is killed if it runs longer than the timeout.
+    /// The process is killed if it runs longer than the timeout, or when
+    /// [`Pandoc::kill_all_running`] is called.
     pub fn run(&self, args: &[OsString], stdin: Option<Vec<u8>>) -> Result<Vec<u8>, PandocError> {
+        if self.is_stopped() {
+            return Err(PandocError::Cancelled);
+        }
         let mut cmd = Command::new(&self.path);
         cmd.args(args)
             .stdin(if stdin.is_some() {
@@ -126,18 +156,26 @@ impl Pandoc {
         let stdout = drain(child.stdout.take());
         let stderr = drain(child.stderr.take());
 
-        let status = match child.wait_timeout(self.timeout) {
-            Ok(Some(status)) => status,
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                // Don't join the readers: a grandchild may still hold the pipes.
+        let deadline = Instant::now() + self.timeout;
+        let status = loop {
+            // On every early return the readers aren't joined: a grandchild may
+            // still hold the pipes.
+            if self.is_stopped() {
+                kill(&mut child);
+                return Err(PandocError::Cancelled);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                kill(&mut child);
                 return Err(PandocError::Timeout(self.timeout));
             }
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(PandocError::Spawn(e));
+            match child.wait_timeout(left.min(POLL)) {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(e) => {
+                    kill(&mut child);
+                    return Err(PandocError::Spawn(e));
+                }
             }
         };
 
@@ -152,6 +190,11 @@ impl Pandoc {
             })
         }
     }
+}
+
+fn kill(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> thread::JoinHandle<Vec<u8>> {
@@ -170,6 +213,7 @@ impl PandocError {
         match self {
             Self::NotFound => "Bundled pandoc not found".into(),
             Self::Spawn(e) => truncate(&format!("Could not start pandoc: {e}")),
+            Self::Cancelled => "Cancelled".into(),
             Self::Timeout(d) => {
                 let secs = d.as_secs();
                 if secs >= 60 && secs % 60 == 0 {
@@ -252,6 +296,30 @@ mod tests {
             .unwrap_err();
         assert!(matches!(e, PandocError::Failed { .. }));
         assert!(!e.short_reason().is_empty() && e.short_reason().len() <= 120);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kill_all_running_stops_runs_and_refuses_new_ones() {
+        let d = tempfile::tempdir().unwrap();
+        let fake = d.path().join("pandoc");
+        std::fs::write(&fake, "#!/bin/sh\nsleep 30\n").unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let p = Pandoc::at(fake);
+        let running = {
+            let p = p.clone();
+            thread::spawn(move || p.run(&[], None))
+        };
+        thread::sleep(Duration::from_millis(300));
+        let t = std::time::Instant::now();
+        p.kill_all_running();
+        let e = running.join().unwrap().unwrap_err();
+        assert!(matches!(e, PandocError::Cancelled), "{e:?}");
+        assert!(t.elapsed() < Duration::from_secs(2));
+        let e = p.clone().run(&[], None).unwrap_err();
+        assert!(matches!(e, PandocError::Cancelled), "{e:?}");
+        assert_eq!(e.short_reason(), "Cancelled");
     }
 
     #[cfg(unix)]
