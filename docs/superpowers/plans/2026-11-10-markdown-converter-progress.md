@@ -2,7 +2,7 @@
 
 Plan: [2026-11-10-markdown-converter.md](2026-11-10-markdown-converter.md) · Spec: [design](../specs/2026-11-10-markdown-converter-design.md)
 
-**Progress: 8 of 12 tasks done** · Last updated 2026-11-10
+**Progress: 9 of 12 tasks done** · Last updated 2026-11-10
 
 | # | Task | Status | Commit | Check |
 |---|------|--------|--------|-------|
@@ -13,9 +13,9 @@ Plan: [2026-11-10-markdown-converter.md](2026-11-10-markdown-converter.md) · Sp
 | 5 | Bundled pandoc: fetch script, locate, run with timeout | ✅ Done | `9023fb6` | 4/4 tests; pandoc 3.13 downloaded, checksum verified |
 | 6 | Picture rewrite on the pandoc JSON AST (`src/media.rs`) | ✅ Done | `610be3f` | 7/7 tests (plan 6 + 1 extra); checked against real pandoc output |
 | 7 | One-file conversion pipeline + fixtures | ✅ Done | `e8610eb` | 11/11 integration tests; full suite 28 + 11 pass, no warnings |
-| 8 | Parallel worker pool (`src/queue.rs`) | ✅ Done | | 4/4 tests (3 + panic recovery); full suite 32 + 11 pass, no warnings |
-| 9 | File-list model and settings | ⬜ Next | | 8 tests |
-| 10 | Main window: top bar, file list, drag-and-drop, conversion | ⬜ To do | | Build + manual check |
+| 8 | Parallel worker pool (`src/queue.rs`) | ✅ Done | `187918b`, `047b3de` | 4/4 tests (3 + panic recovery); full suite 32 + 11 pass, no warnings |
+| 9 | File-list model and settings | ✅ Done | | 8/8 tests (6 file list + 2 settings); full suite pass, no warnings |
+| 10 | Main window: top bar, file list, drag-and-drop, conversion | ⬜ Next | | Build + manual check |
 | 11 | Preview pane | ⬜ To do | | 2 tests + manual check |
 | 12 | Packaging with the bundled pandoc | ⬜ To do | | Build a macOS `.app` and convert a file with it |
 | — | Whole-project review and fixes | ⬜ To do | | After Task 12 |
@@ -26,7 +26,7 @@ Status key: ✅ Done · 🔄 In progress · ⬜ To do · ❌ Blocked
 
 - **Core logic** (Tasks 2–4): no UI, no pandoc. ✅ Done.
 - **Conversion working end to end** (Tasks 5–7): real files convert to Markdown with pictures. ✅ Done.
-- **Usable app** (Tasks 8–11): drag files in, convert in parallel, preview the result. 1 of 4 done.
+- **Usable app** (Tasks 8–11): drag files in, convert in parallel, preview the result. 2 of 4 done.
 - **Shippable** (Task 12): a packaged macOS app with pandoc inside.
 
 ## Decisions made during the work
@@ -36,6 +36,7 @@ Status key: ✅ Done · 🔄 In progress · ⬜ To do · ❌ Blocked
 - **Task 4:** Two extra tests and fixes beyond the plan. (1) A name made by deduplication is never handed out again, so alt texts "Logo", "Logo", "Logo 2" give `logo`, `logo-2`, `logo-2-2` instead of two `logo-2` files overwriting each other. (2) Alt text that slugs to a Windows device name (`con`, `nul`, `aux`, `prn`, `com1`–`9`, `lpt1`–`9`) falls back to `image-NNN`, because Windows can't create those files.
 - **Task 5:** Small additions to the plan. A time-out shorter than a minute shows seconds instead of "0 min". If pandoc is killed by a signal with no error text, the row says so. When pandoc times out, the app stops waiting at once instead of waiting for the output pipes to close.
 - **Task 6:** The plan didn't say what the `image-NNN` number counts. It counts each new picture copied, in document order: a picture used twice keeps its first name, and web links don't use up a number, so numbered names have no gaps. Picture links written with `%20`-style escapes are also found.
+- **Task 8:** If a conversion crashes inside the app (a bug, not a pandoc error), its row is marked Failed with "Internal error while converting" and the worker keeps going.
 
 ## Review Focus (from the plan): where each is covered
 

@@ -1,8 +1,10 @@
 pub mod convert;
+pub mod file_list;
 pub mod formats;
 pub mod media;
 pub mod naming;
 pub mod pandoc;
 pub mod pictures;
 pub mod queue;
+pub mod settings;
 pub mod ui;
