@@ -2,7 +2,7 @@
 
 Plan: [2026-11-10-markdown-converter.md](2026-11-10-markdown-converter.md) · Spec: [design](../specs/2026-11-10-markdown-converter-design.md)
 
-**Progress: 4 of 12 tasks done** · Last updated 2026-11-10
+**Progress: 5 of 12 tasks done** · Last updated 2026-11-10
 
 | # | Task | Status | Commit | Check |
 |---|------|--------|--------|-------|
@@ -10,8 +10,8 @@ Plan: [2026-11-10-markdown-converter.md](2026-11-10-markdown-converter.md) · Sp
 | 2 | Input formats (`src/formats.rs`) | ✅ Done | `b158d67` | 3/3 tests |
 | 3 | Output-name reservation (`src/naming.rs`) | ✅ Done | `ba6c3a6` | 7/7 tests; concurrency test 50/50 runs |
 | 4 | Picture naming (`src/pictures.rs`) | ✅ Done | `0c85028` | 7/7 tests (plan 5 + 2 extra) |
-| 5 | Bundled pandoc: fetch script, locate, run with timeout | ⬜ Next | | 4 tests (downloads pandoc 3.13) |
-| 6 | Picture rewrite on the pandoc JSON AST (`src/media.rs`) | ⬜ To do | | 6 tests |
+| 5 | Bundled pandoc: fetch script, locate, run with timeout | ✅ Done | `9023fb6` | 4/4 tests; pandoc 3.13 downloaded, checksum verified |
+| 6 | Picture rewrite on the pandoc JSON AST (`src/media.rs`) | ⬜ Next | | 6 tests |
 | 7 | One-file conversion pipeline + fixtures | ⬜ To do | | 11 integration tests |
 | 8 | Parallel worker pool (`src/queue.rs`) | ⬜ To do | | 3 tests |
 | 9 | File-list model and settings | ⬜ To do | | 8 tests |
@@ -25,7 +25,7 @@ Status key: ✅ Done · 🔄 In progress · ⬜ To do · ❌ Blocked
 ## Milestones
 
 - **Core logic** (Tasks 2–4): no UI, no pandoc. ✅ Done.
-- **Conversion working end to end** (Tasks 5–7): real files convert to Markdown with pictures.
+- **Conversion working end to end** (Tasks 5–7): real files convert to Markdown with pictures. 1 of 3 done.
 - **Usable app** (Tasks 8–11): drag files in, convert in parallel, preview the result.
 - **Shippable** (Task 12): a packaged macOS app with pandoc inside.
 
@@ -34,6 +34,7 @@ Status key: ✅ Done · 🔄 In progress · ⬜ To do · ❌ Blocked
 - **Task 1:** The folder had no git history, so the existing spec and plan were committed first (`a1636d8`) as the starting point.
 - **Task 3:** The reservation type also derives `Debug`, which the plan didn't list, so later code can unwrap results that hold one. It only adds a capability.
 - **Task 4:** Two extra tests and fixes beyond the plan. (1) A name made by deduplication is never handed out again, so alt texts "Logo", "Logo", "Logo 2" give `logo`, `logo-2`, `logo-2-2` instead of two `logo-2` files overwriting each other. (2) Alt text that slugs to a Windows device name (`con`, `nul`, `aux`, `prn`, `com1`–`9`, `lpt1`–`9`) falls back to `image-NNN`, because Windows can't create those files.
+- **Task 5:** Small additions to the plan. A time-out shorter than a minute shows seconds instead of "0 min". If pandoc is killed by a signal with no error text, the row says so. When pandoc times out, the app stops waiting at once instead of waiting for the output pipes to close.
 
 ## Review Focus (from the plan): where each is covered
 
