@@ -136,11 +136,20 @@ fn done_summary(outcome: &ConvertOutcome) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let mut text = format!("→ {md_name} · {} images", outcome.pictures);
+    let mut text = format!("→ {md_name} · {}", count(outcome.pictures, "image"));
     if !outcome.warnings.is_empty() {
-        text.push_str(&format!(" · {} warnings", outcome.warnings.len()));
+        text.push_str(&format!(" · {}", count(outcome.warnings.len(), "warning")));
     }
     text
+}
+
+/// `1 image`, `3 images`.
+fn count(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
 }
 
 #[cfg(test)]
@@ -162,5 +171,19 @@ mod tests {
             done_summary(&outcome),
             "→ report-converted.md · 3 images · 2 warnings"
         );
+    }
+
+    #[test]
+    fn done_summary_uses_singular_for_one() {
+        let mut outcome = ConvertOutcome {
+            md_path: PathBuf::from("/out/x.md"),
+            assets_dir: None,
+            pictures: 1,
+            warnings: vec!["a".into()],
+        };
+        assert_eq!(done_summary(&outcome), "→ x.md · 1 image · 1 warning");
+        outcome.pictures = 0;
+        outcome.warnings.clear();
+        assert_eq!(done_summary(&outcome), "→ x.md · 0 images");
     }
 }
