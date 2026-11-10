@@ -1,3 +1,4 @@
+pub mod ast;
 pub mod convert;
 pub mod file_list;
 pub mod formats;

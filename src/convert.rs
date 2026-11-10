@@ -1,5 +1,6 @@
 //! Converts one office document to Markdown with pandoc.
 
+use crate::ast::normalize;
 use crate::formats::InputFormat;
 use crate::media::{MediaContext, rewrite_images};
 use crate::naming::{Reservation, reserve_output};
@@ -101,6 +102,8 @@ fn steps(
     let json = pandoc.run(&args, None)?;
     let mut ast: serde_json::Value = serde_json::from_slice(&json)
         .map_err(|e| ConvertError::new(format!("Could not read pandoc output: {e}")))?;
+    // Leaves complex tables as the only HTML the gfm writer can emit.
+    normalize(&mut ast);
 
     let source_dir = req
         .source
@@ -121,17 +124,10 @@ fn steps(
 
     let stdin = serde_json::to_vec(&ast)
         .map_err(|e| ConvertError::new(format!("Could not write pandoc input: {e}")))?;
-    let args: Vec<OsString> = [
-        "--sandbox",
-        "-f",
-        "json",
-        "-t",
-        "gfm-raw_html",
-        "--wrap=none",
-    ]
-    .into_iter()
-    .map(OsString::from)
-    .collect();
+    let args: Vec<OsString> = ["--sandbox", "-f", "json", "-t", "gfm", "--wrap=none"]
+        .into_iter()
+        .map(OsString::from)
+        .collect();
     let markdown = pandoc.run(&args, Some(stdin))?;
     reservation.write_markdown(&markdown).map_err(write_err)?;
 

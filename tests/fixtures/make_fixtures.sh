@@ -43,3 +43,13 @@ cat > "$out/page.html" <<'HTML'
 </body></html>
 HTML
 printf 'this is not a zip file' > "$out/corrupt.docx"
+# A table cell holding two paragraphs: GFM pipe tables can't express it.
+printf '%s\n' '# Complex' '' \
+  '+-----------+----------------+' \
+  '| Item      | Notes          |' \
+  '+===========+================+' \
+  '| Alpha     | First para.    |' \
+  '|           |                |' \
+  '|           | Second para.   |' \
+  '+-----------+----------------+' \
+  | pandoc -f markdown -o "$out/complex-table.docx"

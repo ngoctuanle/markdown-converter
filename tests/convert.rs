@@ -84,6 +84,41 @@ fn docx_with_pictures() {
 }
 
 #[test]
+fn complex_table_kept_as_html_table() {
+    let (d, src) = setup("complex-table.docx", "table.docx");
+    let o = convert_file(&pandoc(), &request(&d, src)).unwrap();
+    let md = std::fs::read_to_string(&o.md_path).unwrap();
+    assert!(!md.contains("[TABLE]"), "{md}");
+    assert!(
+        md.contains("First para.") && md.contains("Second para."),
+        "{md}"
+    );
+    assert!(md.contains("Alpha"), "{md}");
+}
+
+#[test]
+fn no_html_outside_complex_tables() {
+    for name in [
+        "with-pictures.docx",
+        "slides.pptx",
+        "two-sheets.xlsx",
+        "sample.odt",
+        "sample.rtf",
+        "sample.epub",
+        "page.html",
+    ] {
+        let (d, src) = setup(name, name);
+        let o = convert_file(&pandoc(), &request(&d, src)).unwrap();
+        let md = std::fs::read_to_string(&o.md_path).unwrap();
+        for tag in [
+            "<img", "<figure", "<span", "<div", "<a ", "<sup", "<sub", "<u>",
+        ] {
+            assert!(!md.contains(tag), "{name}: {tag} in:\n{md}");
+        }
+    }
+}
+
+#[test]
 fn docx_without_pictures_has_no_assets_dir() {
     let (d, src) = setup("no-pictures.docx", "report.docx");
     let o = convert_file(&pandoc(), &request(&d, src)).unwrap();
