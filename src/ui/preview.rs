@@ -3,7 +3,7 @@
 use crate::file_list::{FileItem, FileStatus};
 use crate::preview_text::{is_relative_path, percent_decode, placeholder_unrenderable_images};
 use gpui_kit::component::button::Button;
-use gpui_kit::component::input::{Editor, EditorState};
+use gpui_kit::component::input::{Editor, EditorState, Textarea, TextareaState};
 use gpui_kit::component::tab::TabBar;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{ActiveTheme, Disableable, IconName, h_flex, v_flex};
@@ -27,13 +27,23 @@ struct Loaded {
     preview_md: SharedString,
 }
 
+/// What the pane shows instead of a file.
+#[derive(Debug, PartialEq, Eq)]
+enum Notice {
+    /// A short centred hint, e.g. "Not converted yet".
+    Hint(String),
+    /// A failed conversion's full error text, scrollable and selectable.
+    Failure(String),
+}
+
 pub struct PreviewPane {
     mode: PreviewMode,
     /// Holds the raw text for Markdown mode.
     editor: Entity<EditorState>,
+    /// Holds the error text of a failed file.
+    failure_text: Entity<TextareaState>,
     current: Option<Loaded>,
-    /// Shown instead of the file, e.g. "Not converted yet".
-    message: Option<String>,
+    notice: Option<Notice>,
 }
 
 impl PreviewPane {
@@ -46,8 +56,9 @@ impl PreviewPane {
         Self {
             mode: PreviewMode::default(),
             editor,
+            failure_text: cx.new(|cx| TextareaState::new(window, cx)),
             current: None,
-            message: Some("Select a file to preview".into()),
+            notice: Some(Notice::Hint("Select a file to preview".into())),
         }
     }
 
@@ -56,15 +67,17 @@ impl PreviewPane {
     /// Called again whenever any conversion reports progress, so a file already on
     /// show is not read a second time.
     pub fn show(&mut self, item: Option<&FileItem>, window: &mut Window, cx: &mut Context<Self>) {
-        let message = match item.map(|item| &item.status) {
-            None => Some("Select a file to preview".to_string()),
+        let notice = match item.map(|item| &item.status) {
+            None => Some(Notice::Hint("Select a file to preview".into())),
             Some(FileStatus::Waiting | FileStatus::Queued | FileStatus::Converting) => {
-                Some("Not converted yet".to_string())
+                Some(Notice::Hint("Not converted yet".into()))
             }
-            Some(FileStatus::Failed(err)) => Some(err.detail.clone()),
+            Some(FileStatus::Failed(err)) => {
+                Some(Notice::Failure(failure_text(&err.detail).to_string()))
+            }
             Some(FileStatus::Done(outcome)) => {
                 let path = &outcome.md_path;
-                if self.message.is_none()
+                if self.notice.is_none()
                     && self.current.as_ref().is_some_and(|c| &c.md_path == path)
                 {
                     return;
@@ -79,17 +92,25 @@ impl PreviewPane {
                             .update(cx, |editor, cx| editor.set_value(text, window, cx));
                         None
                     }
-                    Err(e) => Some(format!("Could not read {}: {e}", path.display())),
+                    Err(e) => Some(Notice::Hint(format!(
+                        "Could not read {}: {e}",
+                        path.display()
+                    ))),
                 }
             }
         };
-        if message.is_some() {
-            if self.current.is_none() && self.message == message {
+        if let Some(notice) = &notice {
+            if self.current.is_none() && self.notice.as_ref() == Some(notice) {
                 return;
             }
             self.current = None;
+            if let Notice::Failure(text) = notice {
+                let text = text.clone();
+                self.failure_text
+                    .update(cx, |state, cx| state.set_value(text, window, cx));
+            }
         }
-        self.message = message;
+        self.notice = notice;
         cx.notify();
     }
 
@@ -133,16 +154,31 @@ impl PreviewPane {
     }
 
     fn render_body(&self, cx: &Context<Self>) -> AnyElement {
-        if let Some(message) = &self.message {
-            return div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .p_4()
-                .text_color(cx.theme().muted_foreground)
-                .child(message.clone())
-                .into_any_element();
+        match &self.notice {
+            Some(Notice::Hint(hint)) => {
+                return div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p_4()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(hint.clone())
+                    .into_any_element();
+            }
+            Some(Notice::Failure(_)) => {
+                return div()
+                    .size_full()
+                    .p_2()
+                    .child(
+                        Textarea::new(&self.failure_text)
+                            .readonly(true)
+                            .appearance(false)
+                            .h(relative(1.)),
+                    )
+                    .into_any_element();
+            }
+            None => {}
         }
         let Some(current) = &self.current else {
             return div().into_any_element();
@@ -176,11 +212,32 @@ impl PreviewPane {
     }
 }
 
+/// The error text to show for a failed file; never blank.
+fn failure_text(detail: &str) -> &str {
+    if detail.trim().is_empty() {
+        "Conversion failed"
+    } else {
+        detail
+    }
+}
+
 impl Render for PreviewPane {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .child(self.render_header(cx))
             .child(div().flex_1().min_h_0().child(self.render_body(cx)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failure_text_falls_back_when_blank() {
+        assert_eq!(failure_text("pandoc: bad zip\nline 2"), "pandoc: bad zip\nline 2");
+        assert_eq!(failure_text(""), "Conversion failed");
+        assert_eq!(failure_text("  \n"), "Conversion failed");
     }
 }
