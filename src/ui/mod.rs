@@ -1,8 +1,10 @@
+mod app_view;
+mod file_rows;
+mod preview;
+
+use app_view::AppView;
 use gpui_kit::component::Theme;
-use gpui_kit::{
-    App, AppContext, Bounds, Context, IntoElement, Render, Styled, Subscription, TitlebarOptions,
-    Window, WindowBounds, WindowOptions, div, px, size,
-};
+use gpui_kit::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
 
 /// Opens the main window and runs the app until it quits.
 pub fn run() {
@@ -18,6 +20,8 @@ pub fn run() {
                         size(px(1100.), px(720.)),
                         cx,
                     ))),
+                    // Keeps both the file list and the preview usable.
+                    window_min_size: Some(size(px(800.), px(500.))),
                     titlebar: Some(TitlebarOptions {
                         title: Some("Markdown Converter".into()),
                         ..Default::default()
@@ -30,24 +34,4 @@ pub fn run() {
             .expect("failed to open window");
             cx.activate(true);
         });
-}
-
-/// Placeholder root view; later tasks fill it in.
-pub struct AppView {
-    _appearance: Subscription,
-}
-
-impl AppView {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let _appearance = cx.observe_window_appearance(window, |_, window, cx| {
-            Theme::sync_system_appearance(Some(window), cx)
-        });
-        Self { _appearance }
-    }
-}
-
-impl Render for AppView {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div().size_full()
-    }
 }
