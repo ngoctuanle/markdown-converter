@@ -96,4 +96,11 @@ mod tests {
         assert_eq!(percent_decode("100%.png"), "100%.png");
         assert_eq!(percent_decode("a%zz"), "a%zz");
     }
+
+    #[test]
+    fn escaped_picture_links_resolve_for_the_preview() {
+        let link = "C%23 notes 100%25%3F-assets/pic.png";
+        assert!(is_relative_path(link));
+        assert_eq!(percent_decode(link), "C# notes 100%?-assets/pic.png");
+    }
 }

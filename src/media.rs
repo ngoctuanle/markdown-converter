@@ -1,6 +1,9 @@
 //! Copy, rename and relink the pictures in a pandoc JSON AST.
 
 use crate::pictures::PictureNamer;
+use base64::Engine;
+use base64::alphabet;
+use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
 use regex::Regex;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -31,9 +34,11 @@ static URL_SCHEME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:").unwrap());
 static WINDOWS_DRIVE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\/]").unwrap());
 
-/// Rewrites every Image in `ast`, in document order: embedded and local
-/// pictures are copied into `assets_dir` under readable names and relinked;
-/// remote ones are left alone; missing local ones are left alone with a warning.
+/// Rewrites every Image in `ast`, in document order: embedded pictures, local
+/// picture files and `data:` pictures are saved into `assets_dir` under
+/// readable names and relinked; remote ones are left alone; local links that
+/// are missing, not a picture file or on a network share are left alone with
+/// a warning.
 pub fn rewrite_images(ast: &mut Value, ctx: &MediaContext) -> io::Result<MediaReport> {
     let mut rw = Rewriter {
         ctx,
@@ -43,6 +48,7 @@ pub fn rewrite_images(ast: &mut Value, ctx: &MediaContext) -> io::Result<MediaRe
         ),
         namer: PictureNamer::new(),
         copied: HashMap::new(),
+        saved: HashMap::new(),
         report: MediaReport::default(),
     };
     rw.walk(ast)?;
@@ -80,6 +86,11 @@ fn collect_text(v: &Value, out: &mut String) {
     }
 }
 
+/// Extensions a linked local file must have to be copied (case-insensitive).
+const PICTURE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "bmp", "tif", "tiff", "emf", "wmf", "svg", "webp",
+];
+
 struct Rewriter<'a> {
     ctx: &'a MediaContext<'a>,
     /// `extract_dir` with `/` separators and a trailing `/`.
@@ -87,6 +98,8 @@ struct Rewriter<'a> {
     namer: PictureNamer,
     /// Source picture file → assigned file name.
     copied: HashMap<PathBuf, String>,
+    /// Decoded `data:` picture bytes → assigned file name.
+    saved: HashMap<Vec<u8>, String>,
     report: MediaReport,
 }
 
@@ -118,50 +131,111 @@ impl Rewriter<'_> {
         else {
             return Ok(());
         };
-        let Some(file) = self.resolve(&src) else {
-            return Ok(());
-        };
-
-        let key = file.canonicalize().unwrap_or_else(|_| file.clone());
-        let name = match self.copied.get(&key) {
-            Some(name) => name.clone(),
-            None => {
-                let alt = c.get(1).map(inline_text).unwrap_or_default();
-                let title = c
-                    .get(2)
-                    .and_then(|t| t.get(1))
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let ext = file
-                    .extension()
-                    .map(|e| e.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                let name = self.namer.name(&alt, title, self.report.pictures + 1, &ext);
-                std::fs::create_dir_all(self.ctx.assets_dir)?;
-                std::fs::copy(&file, self.ctx.assets_dir.join(&name))?;
-                self.report.pictures += 1;
-                self.copied.insert(key, name.clone());
-                name
+        let name = if is_data_uri(&src) {
+            let Some((bytes, ext)) = self.decode_data_uri(&src) else {
+                return Ok(());
+            };
+            match self.saved.get(&bytes) {
+                Some(name) => name.clone(),
+                None => {
+                    let name = self.new_name(c, ext);
+                    std::fs::create_dir_all(self.ctx.assets_dir)?;
+                    std::fs::write(self.ctx.assets_dir.join(&name), &bytes)?;
+                    self.report.pictures += 1;
+                    self.saved.insert(bytes, name.clone());
+                    name
+                }
+            }
+        } else {
+            let Some(file) = self.resolve(&src) else {
+                return Ok(());
+            };
+            let key = file.canonicalize().unwrap_or_else(|_| file.clone());
+            match self.copied.get(&key) {
+                Some(name) => name.clone(),
+                None => {
+                    let ext = file
+                        .extension()
+                        .map(|e| e.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    let name = self.new_name(c, &ext);
+                    std::fs::create_dir_all(self.ctx.assets_dir)?;
+                    std::fs::copy(&file, self.ctx.assets_dir.join(&name))?;
+                    self.report.pictures += 1;
+                    self.copied.insert(key, name.clone());
+                    name
+                }
             }
         };
-        c[2][0] = Value::String(format!("{}/{}", self.ctx.link_prefix, name));
+        c[2][0] = Value::String(escape_link(&format!("{}/{}", self.ctx.link_prefix, name)));
         Ok(())
     }
 
-    /// The picture file behind `src`, or `None` for remote links and for
-    /// local ones that don't exist (which add a warning).
+    /// A fresh file name for the picture in image `c`, from its alt text or title.
+    fn new_name(&mut self, c: &Value, ext: &str) -> String {
+        let alt = c.get(1).map(inline_text).unwrap_or_default();
+        let title = c
+            .get(2)
+            .and_then(|t| t.get(1))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        self.namer.name(&alt, title, self.report.pictures + 1, ext)
+    }
+
+    /// The bytes and file extension of a `data:image/<type>;base64,…` link, or
+    /// `None` (with a warning) for any other kind of `data:` link.
+    fn decode_data_uri(&mut self, src: &str) -> Option<(Vec<u8>, &'static str)> {
+        let decoded = src.split_once(',').and_then(|(header, payload)| {
+            let header = header.to_ascii_lowercase();
+            let mime = header
+                .strip_suffix(";base64")?
+                .strip_prefix("data:image/")?;
+            let subtype = mime.split(';').next().unwrap_or("");
+            let ext = data_picture_extension(subtype)?;
+            let payload: String = payload
+                .chars()
+                .filter(|c| !c.is_ascii_whitespace())
+                .collect();
+            let bytes = BASE64.decode(payload).ok()?;
+            Some((bytes, ext))
+        });
+        if decoded.is_none() {
+            let header = src.split(',').next().unwrap_or(src);
+            self.report
+                .warnings
+                .push(format!("Picture not copied: {header},…"));
+        }
+        decoded
+    }
+
+    /// The picture file behind `src`, or `None` for remote links, for local
+    /// ones that may not be copied, and for missing ones (both with a warning).
     fn resolve(&mut self, src: &str) -> Option<PathBuf> {
         let embedded = slashes(src).starts_with(&self.extract_prefix);
-        if !embedded && is_remote(src) {
+        let file_url = if embedded { None } else { file_url_path(src) };
+        if !embedded && file_url.is_none() && is_remote(src) {
             return None;
         }
         let candidates = if embedded {
             vec![PathBuf::from(src), PathBuf::from(percent_decode(src))]
         } else {
-            let decoded = PathBuf::from(percent_decode(src));
-            let rel = PathBuf::from(src);
-            [decoded, rel]
+            let local = match &file_url {
+                Some(path) => vec![path.clone()],
+                None => vec![percent_decode(src), src.to_string()],
+            };
+            // Never touch network paths, and copy only picture files.
+            if local.iter().any(|p| is_network_path(p))
+                || !local.iter().any(|p| has_picture_extension(p))
+            {
+                self.report
+                    .warnings
+                    .push(format!("Picture not copied: {src}"));
+                return None;
+            }
+            local
                 .into_iter()
+                .filter(|p| has_picture_extension(p))
+                .map(PathBuf::from)
                 .map(|p| {
                     if p.is_absolute() {
                         p
@@ -179,6 +253,86 @@ impl Rewriter<'_> {
         }
         found
     }
+}
+
+static BASE64: LazyLock<GeneralPurpose> = LazyLock::new(|| {
+    GeneralPurpose::new(
+        &alphabet::STANDARD,
+        GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    )
+});
+
+fn is_data_uri(src: &str) -> bool {
+    src.get(..5)
+        .is_some_and(|s| s.eq_ignore_ascii_case("data:"))
+}
+
+/// File extension for a `data:image/<subtype>` picture we know how to save.
+fn data_picture_extension(subtype: &str) -> Option<&'static str> {
+    Some(match subtype {
+        "png" => "png",
+        "jpeg" | "jpg" => "jpg",
+        "gif" => "gif",
+        "webp" => "webp",
+        "svg+xml" => "svg",
+        "bmp" => "bmp",
+        "tiff" => "tif",
+        _ => return None,
+    })
+}
+
+/// The local path in a `file:` URL, percent-decoded. A URL naming another
+/// host comes back as a `//host/…` network path (which is then refused).
+fn file_url_path(src: &str) -> Option<String> {
+    let rest = src
+        .get(..5)
+        .filter(|s| s.eq_ignore_ascii_case("file:"))
+        .map(|_| &src[5..])?;
+    let path = match rest.strip_prefix("//") {
+        Some(after) => {
+            let (host, path) = after.split_at(after.find('/').unwrap_or(after.len()));
+            if host.is_empty() || host.eq_ignore_ascii_case("localhost") {
+                path.to_string()
+            } else {
+                format!("//{after}")
+            }
+        }
+        None => rest.to_string(),
+    };
+    let path = percent_decode(&path);
+    // `/C:/pics/a.png` → `C:/pics/a.png`
+    Some(match path.strip_prefix('/') {
+        Some(drive) if WINDOWS_DRIVE.is_match(drive) => drive.to_string(),
+        _ => path,
+    })
+}
+
+/// True for UNC and other network paths (`\\host\share`, `//host/share`),
+/// which would make Windows contact another machine.
+fn is_network_path(path: &str) -> bool {
+    let path = slashes(path);
+    path.starts_with("//")
+}
+
+fn has_picture_extension(path: &str) -> bool {
+    Path::new(&slashes(path))
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| PICTURE_EXTENSIONS.iter().any(|p| e.eq_ignore_ascii_case(p)))
+}
+
+/// Escapes the characters that would end or break a link target: `%`, `#`, `?`.
+fn escape_link(link: &str) -> String {
+    let mut out = String::with_capacity(link.len());
+    for ch in link.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
+            _ => out.push(ch),
+        }
+    }
+    out
 }
 
 /// True for links with a URL scheme (`https:`, `data:`, `file:` …), which are
@@ -373,6 +527,181 @@ mod tests {
             srcs(&ast),
             ["report-assets/in-figure.png", "report-assets/in-table.png"]
         );
+    }
+
+    fn assert_not_copied(src: &str) {
+        let fx = Fx::new();
+        let mut ast = doc(vec![img("x", src, "")]);
+        let r = rewrite_images(&mut ast, &fx.ctx()).unwrap();
+        assert_eq!(r.pictures, 0, "{src}");
+        assert_eq!(srcs(&ast), [src]);
+        assert_eq!(r.warnings, [format!("Picture not copied: {src}")]);
+        assert!(!fx.assets.exists());
+    }
+
+    #[test]
+    fn unc_and_network_paths_rejected() {
+        for src in [
+            r"\\host\share\x.png",
+            "//host/share/x.png",
+            "file://host/share/x.png",
+        ] {
+            assert_not_copied(src);
+        }
+    }
+
+    #[test]
+    fn local_non_picture_files_rejected() {
+        let fx = Fx::new();
+        std::fs::write(fx.src.join("notes.txt"), b"secret").unwrap();
+        std::fs::write(fx.src.join("id_rsa"), b"key").unwrap();
+        let abs = fx.src.join("id_rsa").to_string_lossy().into_owned();
+        for src in ["notes.txt", "id_rsa", abs.as_str()] {
+            let mut ast = doc(vec![img("x", src, "")]);
+            let r = rewrite_images(&mut ast, &fx.ctx()).unwrap();
+            assert_eq!(r.pictures, 0, "{src}");
+            assert_eq!(srcs(&ast), [src]);
+            assert_eq!(r.warnings, [format!("Picture not copied: {src}")]);
+        }
+        assert!(!fx.assets.exists());
+    }
+
+    #[test]
+    fn picture_extension_case_insensitive_and_parent_dirs_allowed() {
+        let fx = Fx::new();
+        let images = fx.src.parent().unwrap().join("images");
+        std::fs::create_dir_all(&images).unwrap();
+        std::fs::write(images.join("up.png"), b"UP").unwrap();
+        std::fs::write(fx.src.join("BIG.JPEG"), b"BIG").unwrap();
+        let mut ast = doc(vec![
+            img("Up", "../images/up.png", ""),
+            img("Big", "BIG.JPEG", ""),
+        ]);
+        let r = rewrite_images(&mut ast, &fx.ctx()).unwrap();
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        assert_eq!(r.pictures, 2);
+        assert_eq!(
+            srcs(&ast),
+            ["report-assets/up.png", "report-assets/big.jpeg"]
+        );
+    }
+
+    #[test]
+    fn file_urls_are_local_paths() {
+        let fx = Fx::new();
+        std::fs::write(fx.src.join("my pic.png"), b"PIC").unwrap();
+        let abs = slashes(&fx.src.join("my pic.png").to_string_lossy()).replace(' ', "%20");
+        let abs = abs.trim_start_matches('/');
+        let mut ast = doc(vec![
+            img("A", &format!("file:///{abs}"), ""),
+            img("B", &format!("file://localhost/{abs}"), ""),
+            img("C", "file:///nowhere/gone.png", ""),
+        ]);
+        let r = rewrite_images(&mut ast, &fx.ctx()).unwrap();
+        assert_eq!(r.pictures, 1);
+        assert_eq!(
+            srcs(&ast),
+            [
+                "report-assets/a.png",
+                "report-assets/a.png",
+                "file:///nowhere/gone.png"
+            ]
+        );
+        assert_eq!(r.warnings, ["Picture not found: file:///nowhere/gone.png"]);
+    }
+
+    #[test]
+    fn file_url_to_path_forms() {
+        assert_eq!(
+            file_url_path("file:///tmp/a%20b.png").as_deref(),
+            Some("/tmp/a b.png")
+        );
+        assert_eq!(
+            file_url_path("FILE://localhost/tmp/a.png").as_deref(),
+            Some("/tmp/a.png")
+        );
+        assert_eq!(
+            file_url_path("file:///C:/pics/a.png").as_deref(),
+            Some("C:/pics/a.png")
+        );
+        assert_eq!(
+            file_url_path("file://host/share/a.png").as_deref(),
+            Some("//host/share/a.png")
+        );
+        assert_eq!(file_url_path("https://x/a.png"), None);
+    }
+
+    // A 1x1 PNG and a different payload.
+    const PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn data_uris_saved_as_pictures_once_per_payload() {
+        let fx = Fx::new();
+        let png = format!("data:image/png;base64,{PNG_B64}");
+        let jpeg = "data:image/jpeg;base64,/9j/4AAQ";
+        let svg = "data:image/svg+xml;base64,PHN2Zy8+";
+        let mut ast = doc(vec![
+            img("Logo", &png, ""),
+            img("Again", &png, ""),
+            img("", jpeg, ""),
+            img("", svg, ""),
+        ]);
+        let r = rewrite_images(&mut ast, &fx.ctx()).unwrap();
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        assert_eq!(r.pictures, 3);
+        assert_eq!(
+            srcs(&ast),
+            [
+                "report-assets/logo.png",
+                "report-assets/logo.png",
+                "report-assets/image-002.jpg",
+                "report-assets/image-003.svg"
+            ]
+        );
+        assert_eq!(
+            std::fs::read(fx.assets.join("image-003.svg")).unwrap(),
+            b"<svg/>"
+        );
+        assert_eq!(std::fs::read_dir(&fx.assets).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn data_uris_unknown_type_or_bad_base64_left_with_warning() {
+        let fx = Fx::new();
+        let unknown = "data:image/x-icon;base64,AAAA";
+        let bad = "data:image/png;base64,***not base64***";
+        let plain = "data:image/svg+xml;utf8,<svg/>";
+        let mut ast = doc(vec![
+            img("", unknown, ""),
+            img("", bad, ""),
+            img("", plain, ""),
+        ]);
+        let r = rewrite_images(&mut ast, &fx.ctx()).unwrap();
+        assert_eq!(r.pictures, 0);
+        assert_eq!(srcs(&ast), [unknown, bad, plain]);
+        assert_eq!(
+            r.warnings,
+            [
+                "Picture not copied: data:image/x-icon;base64,…",
+                "Picture not copied: data:image/png;base64,…",
+                "Picture not copied: data:image/svg+xml;utf8,…",
+            ]
+        );
+        assert!(!fx.assets.exists());
+    }
+
+    #[test]
+    fn links_escape_percent_hash_and_question_mark() {
+        let fx = Fx::new();
+        let a = fx.put("media/a.png", b"A");
+        let mut ast = doc(vec![img("Pic", &a, "")]);
+        let ctx = MediaContext {
+            link_prefix: "C# 100%?-assets",
+            ..fx.ctx()
+        };
+        rewrite_images(&mut ast, &ctx).unwrap();
+        assert_eq!(srcs(&ast), ["C%23 100%25%3F-assets/pic.png"]);
+        assert!(fx.assets.join("pic.png").is_file());
     }
 
     #[test]

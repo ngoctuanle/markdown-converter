@@ -1,5 +1,8 @@
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
 use markdown_converter::convert::{ConvertRequest, convert_file};
 use markdown_converter::pandoc::Pandoc;
+use markdown_converter::preview_text::percent_decode;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
@@ -50,10 +53,10 @@ fn collect_srcs(v: &Value, out: &mut Vec<String>) {
     match v {
         Value::Array(items) => items.iter().for_each(|i| collect_srcs(i, out)),
         Value::Object(o) => {
-            if o.get("t").and_then(Value::as_str) == Some("Image") {
-                if let Some(src) = o["c"][2][0].as_str() {
-                    out.push(src.to_string());
-                }
+            if o.get("t").and_then(Value::as_str) == Some("Image")
+                && let Some(src) = o["c"][2][0].as_str()
+            {
+                out.push(src.to_string());
             }
             o.values().for_each(|c| collect_srcs(c, out));
         }
@@ -199,6 +202,54 @@ fn convert_unicode_name_links_resolve() {
     for s in srcs {
         assert!(d.path().join(&s).exists(), "{s} does not exist");
     }
+}
+
+#[test]
+fn convert_hash_and_percent_name_links_resolve() {
+    let (d, src) = setup("with-pictures.docx", "C# notes 100%.docx");
+    let o = convert_file(&pandoc(), &request(&d, src)).unwrap();
+    let md = std::fs::read_to_string(&o.md_path).unwrap();
+    assert!(md.contains("C%23 notes 100%25-assets/"), "{md}");
+    let srcs = image_srcs(&o.md_path);
+    assert_eq!(srcs.len(), 2);
+    for s in srcs {
+        let decoded = percent_decode(&s);
+        assert!(
+            d.path().join(&decoded).is_file(),
+            "{s} → {decoded} does not exist"
+        );
+    }
+}
+
+#[test]
+fn html_data_picture_saved_and_non_picture_link_refused() {
+    let d = TempDir::new().unwrap();
+    let png = std::fs::read(fixture("local.png")).unwrap();
+    std::fs::write(d.path().join("secret.txt"), "secret").unwrap();
+    let html = format!(
+        "<html><body><p><img src=\"data:image/png;base64,{}\" alt=\"Inline pic\"></p>\
+         <p><img src=\"secret.txt\" alt=\"Not a picture\"></p></body></html>",
+        BASE64.encode(&png)
+    );
+    let src = d.path().join("page.html");
+    std::fs::write(&src, html).unwrap();
+    let o = convert_file(&pandoc(), &request(&d, src)).unwrap();
+    let md = std::fs::read_to_string(&o.md_path).unwrap();
+    assert_eq!(o.pictures, 1);
+    assert!(
+        md.contains("![Inline pic](page-assets/inline-pic.png)"),
+        "{md}"
+    );
+    assert!(!md.contains("base64"), "{md}");
+    assert_eq!(
+        std::fs::read(d.path().join("page-assets/inline-pic.png")).unwrap(),
+        png
+    );
+    assert_eq!(o.warnings, ["Picture not copied: secret.txt"]);
+    assert_eq!(
+        file_names(&d.path().join("page-assets")),
+        ["inline-pic.png"]
+    );
 }
 
 #[test]
