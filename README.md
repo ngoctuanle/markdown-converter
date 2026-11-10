@@ -43,7 +43,7 @@ report-assets/             ← only created if the document has pictures
   image-002.png            ← numbered when there's no usable alt text
 ```
 
-Pictures embedded in the document (including `data:` pictures in HTML) are saved into the assets folder. A linked local picture is copied only if it is a picture file (`png jpg jpeg gif bmp tif tiff emf wmf svg webp`) and not on a network share (`\\host\share`, `//host/…`). Otherwise the link is left as it is and the row shows a warning. Remote (`http(s)`) pictures stay as links. Tables too complex for Markdown pipe tables are kept as HTML `<table>`s. That is the only HTML in the output.
+Pictures embedded in the document (including `data:` pictures in HTML) are saved into the assets folder. A linked local picture is copied only if it is a picture file (`png jpg jpeg gif bmp tif tiff emf wmf svg webp`) and not on a network share (`\\host\share`, `//host/…`). Otherwise the link is left as it is and the row shows a warning. Remote (`http(s)`) pictures stay as links. Tables too complex for Markdown pipe tables are kept as HTML `<table>`s. Apart from those, the only HTML pandoc may write is an empty `<!-- -->` comment it uses to separate two adjacent lists.
 
 Existing output is never overwritten. A second run gives `report-converted (1).md` and `report-assets-(1)/`. To send all output to one folder, tick **Using fixed output location** and pick the folder. The setting is remembered.
 
