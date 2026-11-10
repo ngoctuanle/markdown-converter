@@ -4,4 +4,5 @@ pub mod media;
 pub mod naming;
 pub mod pandoc;
 pub mod pictures;
+pub mod queue;
 pub mod ui;

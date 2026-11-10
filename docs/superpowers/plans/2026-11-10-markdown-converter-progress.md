@@ -2,7 +2,7 @@
 
 Plan: [2026-11-10-markdown-converter.md](2026-11-10-markdown-converter.md) · Spec: [design](../specs/2026-11-10-markdown-converter-design.md)
 
-**Progress: 7 of 12 tasks done** · Last updated 2026-11-10
+**Progress: 8 of 12 tasks done** · Last updated 2026-11-10
 
 | # | Task | Status | Commit | Check |
 |---|------|--------|--------|-------|
@@ -12,9 +12,9 @@ Plan: [2026-11-10-markdown-converter.md](2026-11-10-markdown-converter.md) · Sp
 | 4 | Picture naming (`src/pictures.rs`) | ✅ Done | `0c85028` | 7/7 tests (plan 5 + 2 extra) |
 | 5 | Bundled pandoc: fetch script, locate, run with timeout | ✅ Done | `9023fb6` | 4/4 tests; pandoc 3.13 downloaded, checksum verified |
 | 6 | Picture rewrite on the pandoc JSON AST (`src/media.rs`) | ✅ Done | `610be3f` | 7/7 tests (plan 6 + 1 extra); checked against real pandoc output |
-| 7 | One-file conversion pipeline + fixtures | ✅ Done | | 11/11 integration tests; full suite 28 + 11 pass, no warnings |
-| 8 | Parallel worker pool (`src/queue.rs`) | ⬜ Next | | 3 tests |
-| 9 | File-list model and settings | ⬜ To do | | 8 tests |
+| 7 | One-file conversion pipeline + fixtures | ✅ Done | `e8610eb` | 11/11 integration tests; full suite 28 + 11 pass, no warnings |
+| 8 | Parallel worker pool (`src/queue.rs`) | ✅ Done | | 3/3 tests; full suite 31 + 11 pass, no warnings |
+| 9 | File-list model and settings | ⬜ Next | | 8 tests |
 | 10 | Main window: top bar, file list, drag-and-drop, conversion | ⬜ To do | | Build + manual check |
 | 11 | Preview pane | ⬜ To do | | 2 tests + manual check |
 | 12 | Packaging with the bundled pandoc | ⬜ To do | | Build a macOS `.app` and convert a file with it |
@@ -26,7 +26,7 @@ Status key: ✅ Done · 🔄 In progress · ⬜ To do · ❌ Blocked
 
 - **Core logic** (Tasks 2–4): no UI, no pandoc. ✅ Done.
 - **Conversion working end to end** (Tasks 5–7): real files convert to Markdown with pictures. ✅ Done.
-- **Usable app** (Tasks 8–11): drag files in, convert in parallel, preview the result.
+- **Usable app** (Tasks 8–11): drag files in, convert in parallel, preview the result. 1 of 4 done.
 - **Shippable** (Task 12): a packaged macOS app with pandoc inside.
 
 ## Decisions made during the work
