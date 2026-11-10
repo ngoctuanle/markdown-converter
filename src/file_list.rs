@@ -187,12 +187,18 @@ impl FileList {
 }
 
 /// Direct children of `dir` with a supported extension, sorted by name.
+/// Office lock files (`~$x.docx`) and hidden files such as macOS `._x.docx` are skipped.
 fn supported_children(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
     let mut files: Vec<PathBuf> = entries
         .flatten()
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            !name.starts_with("~$") && !name.starts_with('.')
+        })
         .map(|e| e.path())
         .filter(|p| p.is_file() && is_supported(p))
         .collect();
@@ -251,6 +257,22 @@ mod tests {
         assert_eq!(report.duplicates, 2);
         assert_eq!(report.unsupported, vec![d.join("x.doc")]);
         assert_eq!(l.items().len(), 2);
+    }
+
+    #[test]
+    fn folder_skips_lock_and_hidden_files_but_explicit_files_added() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        for f in ["a.docx", "~$a.docx", "._a.docx", ".hidden.docx"] {
+            fs::write(d.join(f), b"x").unwrap();
+        }
+        let mut l = FileList::default();
+        let report = l.add_paths(&[d.to_path_buf()]);
+        assert_eq!(report.added, vec![1]);
+        assert_eq!(l.get(1).unwrap().source, d.join("a.docx"));
+
+        let report = l.add_paths(&[d.join("~$a.docx"), d.join("._a.docx")]);
+        assert_eq!(report.added, vec![2, 3]);
     }
 
     #[test]
