@@ -4,7 +4,17 @@ mod preview;
 
 use app_view::AppView;
 use gpui_kit::component::Theme;
-use gpui_kit::{App, AppContext, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+use gpui_kit::{
+    App, AppContext, Bounds, KeyBinding, Menu, MenuItem, TitlebarOptions, WindowBounds,
+    WindowOptions, actions, px, size,
+};
+
+actions!(markdown_converter, [Quit]);
+
+#[cfg(target_os = "macos")]
+const QUIT_KEY: &str = "cmd-q";
+#[cfg(not(target_os = "macos"))]
+const QUIT_KEY: &str = "ctrl-q";
 
 /// Opens the main window and runs the app until it quits.
 pub fn run() {
@@ -13,6 +23,18 @@ pub fn run() {
         .run(|cx: &mut App| {
             gpui_kit::init(cx);
             Theme::sync_system_appearance(None, cx);
+
+            cx.on_action(|_: &Quit, cx: &mut App| cx.quit());
+            cx.bind_keys([KeyBinding::new(QUIT_KEY, Quit, None)]);
+            cx.set_menus([Menu::new("Markdown Converter").items([MenuItem::action("Quit", Quit)])]);
+            // Closing the window quits: there is nothing to do without it.
+            cx.on_window_closed(|cx, _| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+
             gpui_kit::open_window(
                 WindowOptions {
                     window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
