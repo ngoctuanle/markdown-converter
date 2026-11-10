@@ -4,6 +4,7 @@ use crate::convert::{ConvertError, ConvertOutcome, ConvertRequest, convert_file}
 use crate::pandoc::Pandoc;
 use smol::channel::{Receiver, Sender};
 use std::collections::VecDeque;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Condvar, Mutex};
 
 pub type JobId = u64;
@@ -81,7 +82,8 @@ impl Converter {
 }
 
 impl Drop for Converter {
-    /// Does not join: workers finish their current job and exit.
+    /// Does not join: workers finish their current job and exit. Jobs still
+    /// queued at drop are abandoned and get no `Finished` event.
     fn drop(&mut self) {
         let (state, wake) = &*self.shared;
         state.lock().unwrap().shutdown = true;
@@ -108,7 +110,18 @@ fn worker_loop(shared: &Shared, f: &ConvertFn, tx: &Sender<WorkerEvent>) {
         if tx.send_blocking(WorkerEvent::Started(id)).is_err() {
             return;
         }
-        let result = f(&req);
+        // One panicking conversion must not kill the worker or lose its event.
+        let result = catch_unwind(AssertUnwindSafe(|| f(&req))).unwrap_or_else(|payload| {
+            let detail = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            Err(ConvertError {
+                reason: "Internal error while converting".into(),
+                detail,
+            })
+        });
         if tx.send_blocking(WorkerEvent::Finished(id, result)).is_err() {
             return;
         }
@@ -193,6 +206,38 @@ mod tests {
             },
         ));
         assert!(extra.is_none(), "unexpected extra event");
+    }
+
+    #[test]
+    fn panicking_conversion_is_reported_and_worker_survives() {
+        let f: ConvertFn = Arc::new(|req| {
+            if req.source == PathBuf::from("file-1.docx") {
+                panic!("boom");
+            }
+            Ok(ConvertOutcome {
+                md_path: req.source.clone(),
+                assets_dir: None,
+                pictures: 0,
+                warnings: Vec::new(),
+            })
+        });
+        let (converter, rx) = Converter::start_with(1, f);
+        converter.enqueue(1, request(1));
+        converter.enqueue(2, request(2));
+        let mut events = Vec::new();
+        for _ in 0..4 {
+            events.push(rx.recv_blocking().unwrap());
+        }
+        assert!(matches!(events[0], WorkerEvent::Started(1)));
+        match &events[1] {
+            WorkerEvent::Finished(1, Err(e)) => {
+                assert_eq!(e.reason, "Internal error while converting");
+                assert_eq!(e.detail, "boom");
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+        assert!(matches!(events[2], WorkerEvent::Started(2)));
+        assert!(matches!(events[3], WorkerEvent::Finished(2, Ok(_))));
     }
 
     #[test]

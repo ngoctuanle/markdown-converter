@@ -13,7 +13,7 @@ Plan: [2026-11-10-markdown-converter.md](2026-11-10-markdown-converter.md) · Sp
 | 5 | Bundled pandoc: fetch script, locate, run with timeout | ✅ Done | `9023fb6` | 4/4 tests; pandoc 3.13 downloaded, checksum verified |
 | 6 | Picture rewrite on the pandoc JSON AST (`src/media.rs`) | ✅ Done | `610be3f` | 7/7 tests (plan 6 + 1 extra); checked against real pandoc output |
 | 7 | One-file conversion pipeline + fixtures | ✅ Done | `e8610eb` | 11/11 integration tests; full suite 28 + 11 pass, no warnings |
-| 8 | Parallel worker pool (`src/queue.rs`) | ✅ Done | | 3/3 tests; full suite 31 + 11 pass, no warnings |
+| 8 | Parallel worker pool (`src/queue.rs`) | ✅ Done | | 4/4 tests (3 + panic recovery); full suite 32 + 11 pass, no warnings |
 | 9 | File-list model and settings | ⬜ Next | | 8 tests |
 | 10 | Main window: top bar, file list, drag-and-drop, conversion | ⬜ To do | | Build + manual check |
 | 11 | Preview pane | ⬜ To do | | 2 tests + manual check |
