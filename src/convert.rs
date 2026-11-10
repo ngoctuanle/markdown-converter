@@ -69,13 +69,12 @@ pub fn convert_file(pandoc: &Pandoc, req: &ConvertRequest) -> Result<ConvertOutc
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let reservation = reserve_output(&req.output_dir, &stem)
+    // Dropped without commit (error, panic, cancel) it deletes the output again.
+    let mut reservation = reserve_output(&req.output_dir, &stem)
         .map_err(|e| ConvertError::new(format!("Cannot write to output folder: {e}")))?;
-
-    let mut reservation = reservation;
-    steps(pandoc, req, format, &mut reservation).inspect_err(|_| {
-        let _ = reservation.discard();
-    })
+    let outcome = steps(pandoc, req, format, &mut reservation)?;
+    reservation.commit();
+    Ok(outcome)
 }
 
 fn steps(

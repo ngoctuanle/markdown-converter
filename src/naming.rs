@@ -22,12 +22,17 @@ pub fn output_names(stem: &str, index: u32) -> (String, String) {
 
 /// A claimed output slot. The `.md` file already exists (empty) on disk; the
 /// assets folder does not exist yet and is created by whoever writes pictures.
+///
+/// Dropping a reservation without calling [`Reservation::commit`] (on an
+/// error, a panic, or a cancelled conversion) deletes the `.md` and the
+/// assets folder, so a failed file leaves nothing behind.
 #[derive(Debug)]
 pub struct Reservation {
     pub md_path: PathBuf,
     pub assets_dir: PathBuf,
     pub index: u32,
-    file: File,
+    /// `None` once committed or dropped.
+    file: Option<File>,
 }
 
 /// Claims the lowest index whose `.md` and assets folder both don't exist.
@@ -52,7 +57,7 @@ pub fn reserve_output(out_dir: &Path, stem: &str) -> io::Result<Reservation> {
                     md_path,
                     assets_dir,
                     index,
-                    file,
+                    file: Some(file),
                 });
             }
             Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
@@ -75,28 +80,28 @@ impl Reservation {
 
     /// Writes the Markdown into the reserved file.
     pub fn write_markdown(&mut self, bytes: &[u8]) -> io::Result<()> {
-        self.file.write_all(bytes)?;
-        self.file.flush()
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| io::Error::other("reservation already closed"))?;
+        file.write_all(bytes)?;
+        file.flush()
     }
 
-    /// Deletes the reserved `.md` and the assets folder (recursively), if present.
-    pub fn discard(self) -> io::Result<()> {
-        let Reservation {
-            md_path,
-            assets_dir,
-            file,
-            ..
-        } = self;
-        drop(file); // Windows can't delete a file that's still open.
-        ignore_not_found(std::fs::remove_file(&md_path))?;
-        ignore_not_found(std::fs::remove_dir_all(&assets_dir))
+    /// Keeps the output: the `.md` and assets folder are no longer deleted on drop.
+    pub fn commit(mut self) {
+        self.file = None;
     }
 }
 
-fn ignore_not_found(r: io::Result<()>) -> io::Result<()> {
-    match r {
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
-        other => other,
+impl Drop for Reservation {
+    /// Deletes the reserved `.md` and the assets folder (recursively) unless committed.
+    fn drop(&mut self) {
+        if self.file.take().is_some() {
+            // The file is closed first: Windows can't delete a file that's still open.
+            let _ = std::fs::remove_file(&self.md_path);
+            let _ = std::fs::remove_dir_all(&self.assets_dir);
+        }
     }
 }
 
@@ -155,23 +160,51 @@ mod tests {
         let hs: Vec<_> = (0..16)
             .map(|_| {
                 let p = p.clone();
-                std::thread::spawn(move || reserve_output(&p, "report").unwrap().index)
+                // Returned, not dropped: dropping would free the slot again.
+                std::thread::spawn(move || reserve_output(&p, "report").unwrap())
             })
             .collect();
-        let mut idx: Vec<u32> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        let held: Vec<Reservation> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        let mut idx: Vec<u32> = held.iter().map(|r| r.index).collect();
         idx.sort();
         assert_eq!(idx, (0..16).collect::<Vec<_>>());
     }
 
     #[test]
-    fn discard_removes_md_and_assets() {
+    fn dropped_without_commit_leaves_nothing() {
         let d = tempdir().unwrap();
-        let r = reserve_output(d.path(), "a").unwrap();
+        let mut r = reserve_output(d.path(), "a").unwrap();
         std::fs::create_dir(&r.assets_dir).unwrap();
         std::fs::write(r.assets_dir.join("x.png"), "x").unwrap();
+        r.write_markdown(b"# partial").unwrap();
+        drop(r);
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn committed_reservation_is_kept() {
+        let d = tempdir().unwrap();
+        let mut r = reserve_output(d.path(), "a").unwrap();
+        std::fs::create_dir(&r.assets_dir).unwrap();
+        r.write_markdown(b"# done").unwrap();
         let (md, assets) = (r.md_path.clone(), r.assets_dir.clone());
-        r.discard().unwrap();
-        assert!(!md.exists() && !assets.exists());
+        r.commit();
+        assert_eq!(std::fs::read_to_string(md).unwrap(), "# done");
+        assert!(assets.is_dir());
+    }
+
+    #[test]
+    fn panic_after_reservation_leaves_nothing() {
+        let d = tempdir().unwrap();
+        let p = d.path().to_path_buf();
+        let result = std::panic::catch_unwind(move || {
+            let r = reserve_output(&p, "a").unwrap();
+            std::fs::create_dir(&r.assets_dir).unwrap();
+            std::fs::write(r.assets_dir.join("x.png"), "x").unwrap();
+            panic!("boom");
+        });
+        assert!(result.is_err());
+        assert_eq!(std::fs::read_dir(d.path()).unwrap().count(), 0);
     }
 
     #[cfg(unix)]

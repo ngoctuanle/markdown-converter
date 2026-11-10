@@ -264,6 +264,38 @@ fn corrupt_file_fails_and_cleans_up() {
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
+/// The second pandoc step (writing Markdown) fails after the pictures were
+/// already copied: the `.md` and the assets folder must both be removed.
+#[cfg(unix)]
+#[test]
+fn failure_after_pictures_written_cleans_up() {
+    use std::os::unix::fs::PermissionsExt;
+    let (d, src) = setup("with-pictures.docx", "report.docx");
+    let tools = TempDir::new().unwrap();
+    let seen = tools.path().join("seen.txt");
+    let script = tools.path().join("pandoc");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do\n  if [ \"$a\" = gfm ]; then\n    ls '{out}' > '{seen}'\n    echo 'writer failed' >&2\n    exit 3\n  fi\ndone\nexec '{real}' \"$@\"\n",
+            out = d.path().display(),
+            seen = seen.display(),
+            real = pandoc().path().display(),
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let e = convert_file(&Pandoc::at(script), &request(&d, src)).unwrap_err();
+    assert_eq!(e.reason, "writer failed");
+    let seen = std::fs::read_to_string(seen).unwrap();
+    assert!(
+        seen.contains("report-assets"),
+        "assets not written yet: {seen}"
+    );
+    assert_eq!(file_names(d.path()), ["report.docx"]);
+}
+
 #[test]
 fn convert_missing_source_fails() {
     let d = TempDir::new().unwrap();
