@@ -1,0 +1,6 @@
+# Link the MSVC C runtime statically, so the Windows app starts on PCs that
+# don't have the Visual C++ Redistributable installed (no VCRUNTIME140.dll
+# needed). The cc crate sees this flag and builds bundled C code with /MT too.
+# Note: a RUSTFLAGS environment variable replaces these flags.
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

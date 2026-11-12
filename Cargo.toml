@@ -25,8 +25,17 @@ identifier = "app.markdown-converter"
 before-packaging-command = "cargo build --release"
 out-dir = "dist"
 formats = ["app", "dmg", "nsis", "deb", "appimage"]
+# vendor/pandoc/current/ is staged by scripts/package.{sh,ps1}: pandoc (or
+# pandoc.exe) and its licence, already named pandoc-COPYING.md. The licence is
+# renamed there, not here, because the WiX (MSI) packager ignores a resource's
+# target file name and would install it as COPYING.md.
 resources = [
   { src = "vendor/pandoc/current/pandoc*", target = "." },
-  { src = "vendor/pandoc/current/COPYING.md", target = "pandoc-COPYING.md" },
   "THIRD_PARTY_NOTICES.md",
 ]
+
+# Windows installer. It installs per user by default (no admin prompt), into
+# %LOCALAPPDATA%\Markdown Converter. The uninstaller offers (unticked by
+# default) to delete the saved settings too; see src/settings.rs.
+[package.metadata.packager.nsis]
+appdata-paths = ["$APPDATA\\markdown-converter"]

@@ -12,10 +12,10 @@ A desktop app that turns office and document files into clean, GitHub-flavoured 
 | | |
 |---|---|
 | Rust | 1.99 or newer (edition 2024): `rustc --version` |
-| curl, unzip | used by `scripts/fetch-pandoc.sh` |
+| curl, unzip | used by `scripts/fetch-pandoc.sh` (not needed on Windows, which uses the `.ps1` scripts) |
 | macOS | Xcode command-line tools: `xcode-select --install` |
 | Linux | `gcc g++ clang libfontconfig-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libssl-dev libzstd-dev libasound2-dev libvulkan1` |
-| Windows | Visual Studio 2022 with the "Desktop development with C++" workload, and Git Bash to run the scripts |
+| Windows | Rust with the MSVC toolchain, plus the Visual Studio 2022 Build Tools with the C++ workload, which includes the Windows SDK. gpui's release build needs that SDK's `fxc.exe`. See [Windows setup](#windows-setup) |
 | Packaging only | `cargo install cargo-packager --locked --version 0.11.8` |
 | Regenerating test fixtures only | `python3` |
 
@@ -29,6 +29,22 @@ scripts/fetch-pandoc.sh
 # 2. Run the app (debug build)
 cargo run
 ```
+
+On Windows, use the PowerShell script for step 1 (no Git Bash needed):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\fetch-pandoc.ps1
+cargo run
+```
+
+### Windows setup
+
+```powershell
+scoop install rustup-msvc        # Rust, MSVC host; open a new terminal afterwards
+winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+```
+
+The Build Tools install is about 6 GB and needs admin rights. Scoop has no package for the MSVC compiler, so winget is used for it. `.cargo/config.toml` links the C runtime statically (`+crt-static`). The app therefore starts on PCs without the Visual C++ Redistributable. A `RUSTFLAGS` environment variable replaces that setting, so leave it unset when packaging.
 
 A window titled **Markdown Converter** opens. Add files with **Add files** or by dropping them (or a folder) onto the list, then press **Convert N**. A dropped folder adds its supported files, skipping Office lock files (`~$x.docx`) and hidden files such as macOS `._x.docx`.
 
@@ -158,16 +174,36 @@ cargo install cargo-packager --locked --version 0.11.8   # once
 scripts/package.sh aarch64-apple-darwin                  # → dist/Markdown Converter.app + .dmg
 ```
 
-The script downloads and checks pandoc for the target, copies it to `vendor/pandoc/current/`, builds a release binary, and runs `cargo packager`. The package contains `pandoc`, its licence (`pandoc-COPYING.md`) and `THIRD_PARTY_NOTICES.md`.
+The script downloads and checks pandoc for the target, copies it to `vendor/pandoc/current/` (with the licence renamed to `pandoc-COPYING.md`), builds a release binary, and runs `cargo packager`. The package contains `pandoc`, its licence (`pandoc-COPYING.md`) and `THIRD_PARTY_NOTICES.md`.
 
 | Target | Run on | Output |
 |---|---|---|
 | `aarch64-apple-darwin`, `x86_64-apple-darwin` | macOS | `.app`, `.dmg` |
 | `universal-apple-darwin` | macOS | universal `.app` (ad-hoc signed) + `Markdown Converter-universal.dmg` |
-| `x86_64-pc-windows-msvc` | Windows | NSIS installer |
+| `x86_64-pc-windows-msvc` | Windows | NSIS installer, portable zip, optional MSI: use `scripts\package.ps1` (below) |
 | `x86_64-unknown-linux-gnu` | Linux | `.deb`, AppImage |
 
-Only `aarch64-apple-darwin` has been built and checked so far. Code signing and notarisation aren't set up.
+`aarch64-apple-darwin` and `x86_64-pc-windows-msvc` have been built and checked. Code signing and notarisation aren't set up.
+
+### Windows
+
+After the [Windows setup](#windows-setup):
+
+```powershell
+cargo install cargo-packager --locked --version 0.11.8          # once
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1    # installer + zip
+powershell -ExecutionPolicy Bypass -File scripts\package.ps1 -Formats nsis,zip,wix   # + MSI
+```
+
+A first build takes about 6 minutes. cargo-packager downloads NSIS and WiX by itself. Output in `dist\`:
+
+| File | What it is |
+|---|---|
+| `markdown-converter_<ver>_x64-setup.exe` | NSIS installer, about 33 MB. Installs per user without admin into `%LOCALAPPDATA%\Markdown Converter`, adds Start-menu and desktop shortcuts and an Apps & features entry. Its uninstaller offers (unticked) to delete `%APPDATA%\markdown-converter`. Silent install: `/S`. |
+| `markdown-converter_<ver>_x64-portable.zip` | The same four files in a `Markdown Converter\` folder. Unzip and run `markdown-converter.exe`. Settings still go to `%APPDATA%`. |
+| `markdown-converter_<ver>_x64_en-US.msi` | Only with `-Formats …,wix`. Per-machine install into `Program Files` (needs admin), for managed deployment. |
+
+pandoc for Windows is about 240 MB unpacked, which is most of the installed size. Without a code-signing certificate, SmartScreen warns "Windows protected your PC" on first run; choose **More info → Run anyway**. To sign, set `certificate-thumbprint` and `digest-algorithm = "sha256"` (or a `sign-command` containing `%1`) under `[package.metadata.packager.windows]` in `Cargo.toml`. To check that an installed copy uses its own pandoc, start it from a shell with `$env:Path = 'C:\Windows\System32'`. "Bundled pandoc not found" must not appear.
 
 Release builds never fall back to a system pandoc. To check that a package uses its bundled copy, run it with a minimal `PATH`:
 
@@ -191,7 +227,8 @@ src/
   settings.rs     fixed output folder, saved as JSON
   preview_text.rs preview loading (2 MB cap) and placeholders for pictures it can't draw
   ui/             window, top bar, file rows, preview pane
-scripts/          fetch-pandoc.sh, package.sh
+scripts/          fetch-pandoc.sh, package.sh (macOS/Linux); fetch-pandoc.ps1, package.ps1 (Windows)
+.cargo/config.toml  static C runtime for the Windows build
 tests/            integration tests + fixtures
 vendor/pandoc/    downloaded pandoc binaries (git-ignored)
 ```
